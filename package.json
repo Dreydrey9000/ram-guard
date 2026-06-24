@@ -1,0 +1,29 @@
+{
+  "name": "ram-guard",
+  "version": "1.0.0",
+  "description": "A tiny menu bar app that shows your Mac's true memory pressure and lets you free RAM by quitting the biggest apps.",
+  "license": "MIT",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "npm run build && electron .",
+    "test": "npm run build && node selftest.js",
+    "dist": "npm run build && electron-builder"
+  },
+  "devDependencies": {
+    "@types/node": "24.x",
+    "electron": "42.4.0",
+    "electron-builder": "26.15.2",
+    "typescript": "5.7.3"
+  },
+  "build": {
+    "appId": "com.drey.ramguard",
+    "productName": "RAM Guard",
+    "files": ["dist/**/*", "index.html", "renderer.js", "preload.js"],
+    "mac": {
+      "target": "dir",
+      "category": "public.app-category.utilities",
+      "LSUIElement": true
+    }
+  }
+}

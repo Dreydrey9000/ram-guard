@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self';">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  :root {
+    --bg: #141310; --panel: #1E1B15; --fg: #ECE6D9; --ink: #20201E; --gold: #C2A878;
+    --green: #6CC36C; --amber: #E0A23C; --red: #E0556F;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: -apple-system, sans-serif;
+         margin: 0; padding: 18px 20px; font-size: 13px; -webkit-user-select: none; cursor: default; }
+  h1 { font-size: 16px; margin: 0 0 2px; letter-spacing: .2px; color: var(--gold); }
+  .sub { opacity: .6; font-size: 12px; margin-bottom: 16px; }
+  .bar-wrap { margin: 6px 0 14px; }
+  .bar-label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+  .bar { height: 18px; background: rgba(255,255,255,.08); border-radius: 9px; overflow: hidden; }
+  .bar.thin { height: 10px; }
+  .fill { height: 100%; width: 0; transition: width .3s ease, background .3s ease; border-radius: 9px; }
+  .section-h { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; opacity: .55; margin: 18px 0 6px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+         padding: 8px 10px; border: 1px solid rgba(255,255,255,.10); border-radius: 8px; margin: 6px 0; background: var(--panel); }
+  .row .meta { min-width: 0; }
+  .row .dir { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+  .row .det { opacity: .6; font-size: 11px; }
+  .row .acts .free { background: rgba(224,85,111,.20); color: var(--fg); border: none; border-radius: 7px;
+                     padding: 6px 12px; font-size: 12px; cursor: pointer; }
+  .row .acts .free:hover { background: rgba(224,85,111,.35); }
+  .empty { opacity: .5; font-size: 12px; padding: 6px 2px; }
+</style>
+</head>
+<body>
+  <h1>RAM Guard</h1>
+  <div class="sub">What's using your memory — quit an app to free some.</div>
+
+  <div class="bar-wrap">
+    <div class="bar-label"><span>Memory used</span><span id="ramTxt">—</span></div>
+    <div class="bar"><div id="ramFill" class="fill"></div></div>
+  </div>
+
+  <div class="bar-wrap">
+    <div class="bar-label"><span>Compression (real pressure)</span><span id="compTxt">—</span></div>
+    <div class="bar thin"><div id="compFill" class="fill"></div></div>
+  </div>
+
+  <div class="section-h">Biggest memory users</div>
+  <div id="procs"><div class="empty">Reading processes…</div></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
