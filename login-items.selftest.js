@@ -76,6 +76,7 @@ assert.strictEqual(oneLine[0].hidden, false, 'missing hidden flag defaults to fa
 	// (the engine's allowed Trash root is os.homedir(), which is now the tmpdir sandbox). We
 	// never reference a real user file — HOME was hijacked to a tmpdir before the module loaded.
 	const tmpDir = fs.mkdtempSync(path.join(os.homedir(), '.ram-guard-selftest-'));
+	const tmpDir2 = fs.mkdtempSync(path.join(os.homedir(), '.ram-guard-selftest-bs-'));
 	const tmpFile = path.join(tmpDir, 'throwaway-login-helper.txt');
 	fs.writeFileSync(tmpFile, 'disposable fixture — safe to trash');
 	assert.ok(fs.existsSync(tmpFile), 'fixture file exists before trashing');
@@ -98,14 +99,35 @@ assert.strictEqual(oneLine[0].hidden, false, 'missing hidden flag defaults to fa
 	assert.strictEqual(refused.ok, false, 'path outside allowed root is refused');
 	assert.ok(fs.existsSync(outsideFile), 'file outside allowed root is untouched');
 
+	// 4) INJECTION REGRESSION — a path containing a BACKSLASH must NEVER be string-concatenated
+	// into an osascript literal. The old code did `abs.replace(/"/g, '')` (stripping quotes,
+	// ignoring backslashes), so a crafted name ending in a backslash escaped the closing quote and
+	// could break out into `do shell script`. The fix hard-rejects backslash/newline paths BEFORE
+	// building any script and routes them to the pure-Node fs.rename fallback. We prove it by
+	// trashing a real file whose NAME contains a backslash: it must still MOVE (via the fallback),
+	// original gone + copy present, and no osascript ever sees the path. (macOS filenames may
+	// legally contain a backslash; the path separator is '/'.)
+	const backslashName = 'pwn\\name.txt';        // one literal backslash inside the filename
+	const backslashFile = path.join(tmpDir2, backslashName);
+	fs.writeFileSync(backslashFile, 'crafted name — must move via fs.rename, never via osascript');
+	assert.ok(fs.existsSync(backslashFile), 'backslash-named fixture created');
+
+	const bsRes = await trashLoginItemTarget(backslashFile);
+	assert.strictEqual(bsRes.ok, true, 'backslash path still moves safely (via the fs.rename fallback)');
+	assert.ok(bsRes.trashedPath, 'backslash path move returns a destination');
+	assert.ok(!fs.existsSync(backslashFile), 'INJECTION-SAFE: backslash source is GONE (moved, not run)');
+	assert.ok(fs.existsSync(bsRes.trashedPath), 'INJECTION-SAFE: backslash file PRESENT in Trash (a move, not a delete)');
+
 	// cleanup: remove our throwaway items so the test leaves no trace.
 	// (fs.rmSync here is on OUR OWN throwaway fixtures only — never a user path — and is test
 	// teardown, not the app's delete path; the app itself only ever moves to Trash.)
 	try { fs.rmSync(res.trashedPath, { force: true }); } catch (e) { /* best effort */ }
+	try { fs.rmSync(bsRes.trashedPath, { force: true }); } catch (e) { /* best effort */ }
 	try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) { /* best effort */ }
+	try { fs.rmSync(tmpDir2, { recursive: true, force: true }); } catch (e) { /* best effort */ }
 	try { fs.rmSync(outsideDir, { recursive: true, force: true }); } catch (e) { /* best effort */ }
 
-	console.log('OK — login-items parsers + name-guard + trash-move verified.');
+	console.log('OK — login-items parsers + name-guard + trash-move + injection-guard verified.');
 	restoreHome();
 })().catch((e) => {
 	restoreHome();

@@ -184,12 +184,20 @@ export function trashLoginItemTarget(target: string): Promise<TrashResult> {
 		try { exists = fs.existsSync(abs); } catch { exists = false; }
 		if (!exists) { resolve({ ok: false }); return; }
 
+		// Hard-reject paths that can't be safely embedded in an AppleScript literal. A backslash
+		// or newline in a filename is the exact vector that lets a crafted name break out of the
+		// string and run arbitrary AppleScript, so refuse those before building any script and
+		// route them straight to the pure-Node fs.rename fallback (no osascript involved).
+		if (/[\\\n\r]/.test(abs)) { renameFallback(abs).then(resolve); return; }
+
 		// Try Finder first (best UX: real Trash with undo), but only on darwin and only if it
-		// answers within the timeout. Any failure routes to the fs.rename fallback.
+		// answers within the timeout. The path is embedded as a properly-escaped AppleScript
+		// string literal (escape backslash THEN quote) — NEVER by stripping characters from the
+		// path we intend to act on. Any failure routes to the fs.rename fallback.
 		const finderThenFallback = (): void => {
 			if (process.platform !== 'darwin') { renameFallback(abs).then(resolve); return; }
 			runOsascript(
-				['tell application "Finder" to delete (POSIX file "' + abs.replace(/"/g, '') + '") as alias'],
+				['tell application "Finder" to delete (POSIX file ' + asStringLiteral(abs) + ') as alias'],
 				4000,
 			)
 				.then(() => resolve({ ok: true, trashedPath: trashPathFor(abs) }))
@@ -209,6 +217,14 @@ function isUnderAllowedRoot(abs: string): boolean {
 
 function trashPathFor(abs: string): string {
 	return path.join(os.homedir(), '.Trash', path.basename(abs));
+}
+
+// Escapes a string for safe embedding inside an AppleScript double-quoted literal. Backslash MUST
+// be escaped FIRST, then the quote, so a path can never terminate the literal early and break out
+// into executable AppleScript. Mirrors the asStringLiteral() escaper in junk.ts. We additionally
+// reject backslash/newline-bearing paths upstream (see trashLoginItemTarget) as a second gate.
+function asStringLiteral(s: string): string {
+	return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
 }
 
 // The mandatory fallback: move the path into ~/.Trash with fs.rename. On a name collision in

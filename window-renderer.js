@@ -225,9 +225,14 @@
     arc.style.strokeDashoffset = off;
     arc.setAttribute('stroke', health > 70 ? '#3FA66B' : health > 45 ? '#C2A878' : '#E0556F');
     $('#ringPct').textContent = Math.round(health);
+    // Banner must agree with the ring: tier the message off how much memory is USED, so a low
+    // ring score can never read "running clean". >=75% used = attention, 46-74% = tidier, <=45% = clean.
     if (used >= 75) {
       $('#healthTitle').textContent = 'Your Mac needs attention';
       $('#healthSub').textContent = used + '% memory used · quit a few heavy apps to free RAM';
+    } else if (used >= 46) {
+      $('#healthTitle').textContent = 'Your Mac could be tidier';
+      $('#healthSub').textContent = used + '% memory used · quitting an app or two would help';
     } else {
       $('#healthTitle').textContent = 'Your Mac is running clean';
       $('#healthSub').textContent = used + '% memory used · you are in good shape';

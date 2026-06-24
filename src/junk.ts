@@ -11,6 +11,13 @@
  *  `osascript` Finder 'delete' first, and because Finder AppleEvents were observed timing
  *  out live, FALLS BACK to moving each item into ~/.Trash via fs.rename (with a name-collision
  *  suffix). Every path is validated absolute + existing + under an allowed root before it moves.
+ *
+ *  ONE EXCEPTION — the 'trash' category. You cannot reclaim space by "moving items to the Trash"
+ *  when they are ALREADY in the Trash (that only renames them within ~/.Trash and frees nothing).
+ *  So the 'trash' category EMPTIES the Trash via `osascript` Finder 'empty the trash' and credits
+ *  only the bytes that actually left (re-measured before/after). To stay unit-testable without
+ *  touching the real Finder, cleanJunk takes an optional injected emptier the self-test overrides
+ *  with a sandbox-only implementation.
  *--------------------------------------------------------------------------------------------*/
 
 import * as os from 'os';
@@ -279,6 +286,30 @@ export async function trashPath(target: string): Promise<string> {
 	return moveIntoTrash(target);
 }
 
+// Empties ~/.Trash for real. The 'trash' category's whole job is RECLAIMING space, but routing it
+// through trashPath() can only RELOCATE items within ~/.Trash (it's an allowed root) — bytes never
+// leave, so we'd credit space that's still occupied. Instead we ask Finder to empty the Trash, the
+// one safe mechanism that actually removes the bytes while still going through the OS (no rm/unlink
+// here). Timeout-guarded with the same SIGKILL pattern as finderTrash so a hung Finder can't stall
+// a clean. Resolves true only on a clean exit 0 within the timeout.
+function emptyTrashViaFinder(): Promise<boolean> {
+	return new Promise(resolve => {
+		const proc = spawn('osascript', ['-e', 'tell application "Finder" to empty the trash']);
+		let done = false;
+		const finish = (ok: boolean): void => {
+			if (done) { return; }
+			done = true;
+			clearTimeout(timer);
+			try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+			resolve(ok);
+		};
+		const timer = setTimeout(() => finish(false), OSASCRIPT_TIMEOUT_MS);
+		proc.stderr.on('data', () => { /* ignore */ });
+		proc.on('error', () => finish(false));
+		proc.on('close', code => finish(code === 0));
+	});
+}
+
 // Lists the immediate child entries of a directory (the CONTENTS we trash when cleaning a
 // category). Resolves [] on any error so a permission-blocked root degrades to "nothing moved"
 // instead of throwing. Never follows into the entries — we move whole top-level items.
@@ -290,19 +321,47 @@ function contentsOf(dir: string): string[] {
 	}
 }
 
+// Optional override for the Trash-emptying step. Production leaves it undefined (real Finder via
+// emptyTrashViaFinder). The self-test injects a sandbox-only emptier so we can prove the 'trash'
+// category truly frees bytes WITHOUT invoking the real Finder (which ignores HOME and would empty
+// the user's real Trash). The override must return true only after the bytes actually left ~/.Trash.
+export interface CleanOptions {
+	readonly emptyTrash?: () => Promise<boolean>;
+}
+
 // Phase-2, confirm-guarded in main.ts. For each selected category, moves the category's
-// CONTENTS (top-level items) to the Trash via trashPath(). NEVER rm/unlink. Sizes the freed
-// bytes by du-summing the affected roots BEFORE moving, so the UI can report what was reclaimed.
-// In tests this is exercised ONLY against a throwaway os.tmpdir() fixture — see junk.selftest.js.
-export async function cleanJunk(keys: string[]): Promise<CleanResult> {
+// CONTENTS (top-level items) to the Trash via trashPath(). NEVER rm/unlink. Credits freed bytes by
+// re-measuring each affected root before/after, so it only reports space that truly left. The
+// 'trash' category instead EMPTIES the Trash (see below). In tests this is exercised ONLY against a
+// throwaway os.tmpdir() fixture, with the Trash emptier injected — see junk.selftest.js.
+export async function cleanJunk(keys: string[], opts: CleanOptions = {}): Promise<CleanResult> {
 	const wanted = new Set(keys);
 	const specs = CATEGORY_SPECS.filter(s => wanted.has(s.key));
 	if (specs.length === 0) { return { ok: true, freedBytes: 0, movedPaths: [] }; }
 
+	const emptyTrash = opts.emptyTrash ?? emptyTrashViaFinder;
 	const movedPaths: string[] = [];
 	let freedBytes = 0;
 
 	for (const spec of specs) {
+		// The 'trash' category is special: its whole job is reclaiming space, and you cannot do
+		// that by "moving items to the Trash" (they're already there — trashPath would only rename
+		// them WITHIN ~/.Trash and free nothing). Empty the Trash for real, then credit only the
+		// bytes that actually LEFT the directory (re-measure before/after), never a blind estimate.
+		if (spec.key === 'trash') {
+			const dir = spec.root;
+			if (!isUnderAllowedRoot(dir)) { continue; }
+			const before = await duBytes([dir]);
+			const emptied = await emptyTrash();
+			const after = await duBytes([dir]);
+			const shrank = Math.max(0, before - after);
+			if (emptied && shrank > 0) {
+				freedBytes += shrank;
+				movedPaths.push(dir); // record the Trash dir as the thing we emptied
+			}
+			continue;
+		}
+
 		// Which directories' contents this category trashes.
 		const targets = spec.key === 'browserData'
 			? spec.sizeRoots.filter(d => existsSafe(d))
@@ -318,8 +377,13 @@ export async function cleanJunk(keys: string[]): Promise<CleanResult> {
 					movedFromThisDir++;
 				}
 			}
-			// Only credit the freed bytes if we actually moved at least one item out.
-			if (movedFromThisDir > 0) { freedBytes += before; }
+			// Credit only the bytes that actually left this directory. Re-measure after the moves
+			// instead of blindly crediting `before`, so a partial/blocked move can never over-report
+			// reclaimed space (and a move that relocated within an allowed root frees nothing here).
+			if (movedFromThisDir > 0) {
+				const after = await duBytes([dir]);
+				freedBytes += Math.max(0, before - after);
+			}
 		}
 	}
 

@@ -11,8 +11,10 @@
  *  only deletion path is moveToTrash(), which (1) tries Finder's `delete` AppleEvent under a
  *  child-process timeout, and (2) FALLS BACK to renaming the item into ~/.Trash. The Finder
  *  AppleEvent was observed hanging live on this machine, so the ~/.Trash fallback is mandatory,
- *  not optional. A cross-volume move (EXDEV) degrades to copy-then-trash-the-original-via-rename
- *  so the source still lands in the Trash and is never destroyed in place.
+ *  not optional. A cross-volume move (EXDEV) first copies a RECOVERY copy into ~/.Trash, then
+ *  relocates the ORIGINAL into its own volume's .Trashes (a same-volume rename). If the original
+ *  cannot be relocated, moveToTrash returns null so uninstallApp reports failure — we never claim
+ *  freed space while the app is still installed, and we never destroy the source in place.
  *--------------------------------------------------------------------------------------------*/
 
 import * as os from 'os';
@@ -187,9 +189,10 @@ export function findAppLeftovers(app: AppInfo): Promise<string[]> {
 //      with put-back metadata when it works).
 //   2. If Finder times out / errors (observed live), FALL BACK to moving the item into ~/.Trash:
 //        a. fs.rename when same-volume (atomic move),
-//        b. on EXDEV (cross-volume), copy the tree into ~/.Trash then rename the ORIGINAL aside
-//           into ~/.Trash too — copy first so the source is never destroyed before the copy
-//           exists. (No unlink/rm: the original is itself moved into the Trash, not deleted.)
+//        b. on EXDEV (cross-volume), copy a RECOVERY copy into ~/.Trash first (source never lost),
+//           then relocate the ORIGINAL into its own volume's .Trashes via a same-volume rename. If
+//           the original cannot be relocated, return null — never report a freed uninstall that
+//           did not happen. (No unlink/rm: the original is moved into a Trash, not deleted.)
 //   3. Name-collision in ~/.Trash gets a numeric suffix so we never clobber an existing item.
 // Exported so the engine's uninstall path and main.ts's shared trashHelper can both use it.
 // ---------------------------------------------------------------------------------------------
@@ -252,6 +255,57 @@ function copyTree(src: string, dest: string): void {
 	}
 }
 
+// Find the mount point that contains `p` (the longest mount prefix). On macOS, non-boot volumes
+// mount under /Volumes/<Name>; the boot DATA volume is '/'. Pure string work — no spawn.
+function mountPointFor(p: string): string {
+	const abs = path.resolve(p);
+	const volumes = '/Volumes' + path.sep;
+	if (abs.startsWith(volumes)) {
+		// /Volumes/<Name>/... → mount point is /Volumes/<Name>
+		const rest = abs.slice(volumes.length);
+		const name = rest.split(path.sep)[0];
+		if (name) { return path.join('/Volumes', name); }
+	}
+	return '/'; // boot volume
+}
+
+// Relocate an ORIGINAL item into ITS OWN volume's Trash via a same-volume fs.rename (so it never
+// hits EXDEV). For a non-boot volume that is /Volumes/<Name>/.Trashes/<uid>; we fall back to a
+// plain /Volumes/<Name>/.Trashes dir if the per-uid dir can't be made. Returns the resting path on
+// success, or null if we could not move the original (caller then reports failure — never a lie).
+// This is the EXDEV-only path: the boot-volume same-volume case is handled by fs.rename upstream.
+function relocateOriginalOnOwnVolume(srcPath: string): string | null {
+	const mount = mountPointFor(srcPath);
+	if (mount === '/') {
+		// Same volume as ~/.Trash would not have raised EXDEV; nothing safe to do here.
+		return null;
+	}
+	let uid = 0;
+	try { uid = typeof process.getuid === 'function' ? process.getuid() : 0; } catch { uid = 0; }
+	const candidates = [
+		path.join(mount, '.Trashes', String(uid)),
+		path.join(mount, '.Trashes'),
+	];
+	for (const trashDir of candidates) {
+		try { fs.mkdirSync(trashDir, { recursive: true }); } catch { /* may already exist or be denied */ }
+		// Unique destination name so we never clobber an existing trashed item on that volume.
+		const base = path.basename(srcPath);
+		let dest = path.join(trashDir, base);
+		try {
+			let n = 1;
+			while (fs.existsSync(dest)) {
+				const ext = path.extname(base);
+				const stem = ext ? base.slice(0, -ext.length) : base;
+				dest = path.join(trashDir, `${stem} ${n}${ext}`);
+				n += 1;
+			}
+			fs.renameSync(srcPath, dest); // same-volume → atomic, no EXDEV
+			return dest;
+		} catch { /* try the next candidate dir */ }
+	}
+	return null;
+}
+
 // Move ONE absolute path into the Trash. Returns the Trash path on success, or null on failure.
 // NEVER deletes in place — on every code path the item ends up inside ~/.Trash.
 export function moveToTrash(srcPath: string): Promise<string | null> {
@@ -276,14 +330,26 @@ export function moveToTrash(srcPath: string): Promise<string | null> {
 		} catch (err) {
 			const e = err as NodeJS.ErrnoException;
 			if (e && e.code === 'EXDEV') {
-				// Cross-volume: copy into Trash, then move the original aside INTO the Trash too
-				// (rename within its own volume). Copy-first so the source is never lost.
+				// Cross-volume (the .app lives on a different volume than ~/.Trash). We must NOT
+				// just copy and report success — that leaves the original fully installed while the
+				// UI claims it was freed. Honor the contract: copy a recovery copy into ~/.Trash
+				// FIRST (so the bytes are never lost), then RELOCATE the original off its install
+				// spot. The original is cross-volume to ~/.Trash, so the only same-volume move is
+				// into that volume's own .Trashes; if that move can't happen, we DO NOT lie — we
+				// return null so uninstallApp reports ok:false and the UI never credits freed space.
 				try {
 					copyTree(srcPath, dest);
-					return dest;
 				} catch {
-					return null;
+					return null; // couldn't even stage a recovery copy — nothing was touched.
 				}
+				const relocated = relocateOriginalOnOwnVolume(srcPath);
+				// Only success if the ORIGINAL is actually gone from its install location.
+				let stillThere = true;
+				try { stillThere = fs.existsSync(srcPath); } catch { stillThere = true; }
+				if (relocated && !stillThere) { return relocated; }
+				// We could not relocate the original. Leave the recovery copy in ~/.Trash (harmless,
+				// recoverable) but report failure so the UI does not claim space was freed.
+				return null;
 			}
 			return null;
 		}

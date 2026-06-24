@@ -203,12 +203,24 @@ function pushData(): void {
 	}
 }
 
+// Non-overlap guard: even though both engines are now timeout-guarded (max ~3s each), a tick must
+// never STACK on a previous slow tick — otherwise every 5s we'd spawn another vm_stat+ps while the
+// last pair is still finishing, piling up children. If a tick is already in flight we skip this
+// beat entirely; the next interval picks it up.
+let tickRunning = false;
+
 async function tick(): Promise<void> {
-	const [ram, procs] = await Promise.all([getSystemRam(), listTopProcesses()]);
-	last = { ram, procs };
-	const glyph = ram.usedPct >= CRIT_PCT ? '! ' : '';
-	tray.setTitle(`${glyph}${ram.usedPct.toFixed(0)}%`);
-	if (win.isVisible() || (mainWin && !mainWin.isDestroyed() && mainWin.isVisible())) { pushData(); }
+	if (tickRunning) { return; }
+	tickRunning = true;
+	try {
+		const [ram, procs] = await Promise.all([getSystemRam(), listTopProcesses()]);
+		last = { ram, procs };
+		const glyph = ram.usedPct >= CRIT_PCT ? '! ' : '';
+		tray.setTitle(`${glyph}${ram.usedPct.toFixed(0)}%`);
+		if (win.isVisible() || (mainWin && !mainWin.isDestroyed() && mainWin.isVisible())) { pushData(); }
+	} finally {
+		tickRunning = false;
+	}
 }
 
 // ---------------------------------------------------------------------------------------------

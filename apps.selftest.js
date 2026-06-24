@@ -88,11 +88,55 @@ const {
 	assert.ok(Array.isArray(leftovers), 'findAppLeftovers returns an array');
 	assert.strictEqual(leftovers.length, 0, 'no leftovers exist for a bogus app');
 
+	// ---- 3. CROSS-VOLUME (EXDEV) MUST NOT LIE ABOUT FREEING SPACE ------------------------
+	// Regression for the audit finding: when the .app lives on a different volume than ~/.Trash,
+	// the old EXDEV branch COPIED the bundle into Trash and returned the Trash path as "success"
+	// while NEVER removing the original — so uninstallApp reported ok:true + freedBytes while the
+	// app stayed fully installed. We simulate EXDEV by forcing fs.renameSync to throw {code:'EXDEV'}
+	// and assert the new contract: moveToTrash must NOT report success unless the ORIGINAL is gone.
+	const exdevSrc = path.join(tmp, 'ExdevFakeApp.app');
+	fs.mkdirSync(path.join(exdevSrc, 'Contents'), { recursive: true });
+	fs.writeFileSync(path.join(exdevSrc, 'Contents', 'Info.plist'), '<plist>exdev</plist>');
+	assert.ok(fs.existsSync(exdevSrc), 'EXDEV fixture .app created');
+
+	const realRename = fs.renameSync;
+	fs.renameSync = function () {
+		const e = new Error('cross-device link not permitted');
+		e.code = 'EXDEV';
+		throw e;
+	};
+	let exdevResult;
+	try {
+		exdevResult = await moveToTrash(exdevSrc);
+	} finally {
+		fs.renameSync = realRename; // ALWAYS restore, even if the assert below throws.
+	}
+
+	// The source is under os.tmpdir() (boot volume), so it cannot be relocated to a non-boot
+	// volume's .Trashes — the honest outcome is a reported FAILURE, never a fake success.
+	assert.strictEqual(exdevResult, null, 'EXDEV: moveToTrash returns null when the original cannot be relocated');
+	assert.ok(fs.existsSync(exdevSrc), 'EXDEV: the ORIGINAL is NOT destroyed when relocation fails');
+
+	// A recovery copy may have been staged in ~/.Trash (copy-first). Clean it up if present so we
+	// never leave a stray artifact. The Trash copy keeps the bundle basename.
+	const exdevTrashCopy = path.join(os.homedir(), '.Trash', 'ExdevFakeApp.app');
+	try { if (fs.existsSync(exdevTrashCopy)) { fs.rmSync(exdevTrashCopy, { recursive: true, force: true }); } } catch (_) { /* ignore */ }
+
+	// And uninstallApp must surface that failure too: with EXDEV forced, it must NOT claim freed
+	// bytes. We run it against an allowed-root-shaped guard using a path under /Applications would
+	// trash a real app, so instead we assert the engine-level contract via moveToTrash above and
+	// here assert uninstallApp refuses cleanly when the bundle path doesn't exist on disk.
+	const ghost = await uninstallApp({
+		name: 'GhostApp', path: '/Applications/GhostAppNope.app', bytes: 999, mb: 1, detail: 'test', bundleId: null,
+	});
+	assert.strictEqual(ghost.ok, false, 'uninstallApp reports ok:false for a non-existent bundle');
+	assert.strictEqual(ghost.freedBytes, 0, 'uninstallApp credits 0 bytes when nothing was trashed');
+
 	// ---- CLEANUP: remove the Trash artifact and the temp dir. No real user data touched. ---
 	try { fs.rmSync(trashedAt, { recursive: true, force: true }); } catch (_) { /* ignore */ }
 	try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ }
 
-	console.log('OK — apps engine verified (parsers + move-to-Trash proven a MOVE, not a delete).');
+	console.log('OK — apps engine verified (parsers + move-to-Trash proven a MOVE, not a delete; EXDEV never fakes a free).');
 })().catch((err) => {
 	console.error('apps.selftest FAILED:', err);
 	process.exit(1);

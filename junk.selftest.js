@@ -98,7 +98,43 @@ function cleanup() {
 		const noop = await junk.cleanJunk(['notARealCategory']);
 		assert.deepStrictEqual(noop, { ok: true, freedBytes: 0, movedPaths: [] }, 'unknown key -> harmless no-op');
 
-		console.log('OK — junk engine verified (move-to-Trash, never hard-delete; allowlist enforced).');
+		// === 7. The 'trash' category must ACTUALLY free space, not rename within ~/.Trash. ===
+		// Regression for the audit finding: cleaning 'trash' used to route through trashPath, which
+		// (because ~/.Trash is an allowed root) only renamed items to "<name> 2" INSIDE ~/.Trash —
+		// the bytes never left, yet freedBytes was credited. Now 'trash' empties the Trash via an
+		// injected emptier (sandbox-only here — we NEVER call the real Finder, which ignores HOME and
+		// would empty the user's real Trash). We seed the sandbox Trash, then prove the bytes leave
+		// AND that freedBytes reflects the real shrink.
+		const trashedJunkA = path.join(trashDir, 'already-trashed-A.bin');
+		const trashedJunkB = path.join(trashDir, 'already-trashed-B.bin');
+		fs.writeFileSync(trashedJunkA, Buffer.alloc(64 * 1024, 1)); // 64 KB
+		fs.writeFileSync(trashedJunkB, Buffer.alloc(32 * 1024, 2)); // 32 KB
+		assert.ok(fs.existsSync(trashedJunkA) && fs.existsSync(trashedJunkB), 'precondition: items sit in ~/.Trash');
+
+		// Sandbox-only emptier: remove the CONTENTS of the sandbox Trash (top-level items). This
+		// touches ONLY the throwaway sandbox .Trash — never a real path, never the real Finder.
+		const sandboxEmptyTrash = async () => {
+			let removedAny = false;
+			for (const name of fs.readdirSync(trashDir)) {
+				try { fs.rmSync(path.join(trashDir, name), { recursive: true, force: true }); removedAny = true; }
+				catch (_e) { /* ignore */ }
+			}
+			return removedAny;
+		};
+
+		const trashResult = await junk.cleanJunk(['trash'], { emptyTrash: sandboxEmptyTrash });
+		assert.ok(trashResult.ok, 'cleanJunk(trash) reports ok');
+		assert.ok(!fs.existsSync(trashedJunkA) && !fs.existsSync(trashedJunkB), 'FREE-PROOF: items truly left ~/.Trash');
+		assert.ok(trashResult.freedBytes > 0, 'FREE-PROOF: freedBytes reflects bytes that actually left the Trash');
+		// The credited bytes must not exceed what was there (no over-reporting) and be in the right ballpark.
+		assert.ok(trashResult.freedBytes >= 90 * 1024, 'freedBytes covers the ~96 KB that was emptied');
+
+		// And if the emptier reports failure (or frees nothing), NO bytes may be credited.
+		fs.writeFileSync(path.join(trashDir, 'stays.bin'), Buffer.alloc(16 * 1024, 3));
+		const failedEmpty = await junk.cleanJunk(['trash'], { emptyTrash: async () => false });
+		assert.strictEqual(failedEmpty.freedBytes, 0, 'a failed/empty trash-empty credits ZERO freed bytes');
+
+		console.log('OK — junk engine verified (move-to-Trash, never hard-delete; trash category truly frees; allowlist enforced).');
 		cleanup();
 		process.exit(0);
 	} catch (err) {

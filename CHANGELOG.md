@@ -1,5 +1,40 @@
 # Changelog
 
+## [2026-06-24] — v2.1 (security + correctness audit fixes)
+
+### Fixed
+- **Overview health banner now agrees with the ring.** It used to say "Your Mac is running
+  clean" at 72% memory used (contradicting a low ring score). Now tiered off memory used:
+  >=75% = "Your Mac needs attention", 46-74% = "Your Mac could be tidier", <=45% = "running
+  clean". Why: a banner that lies about system health erodes trust in every other number. Bone+gold
+  styling untouched. (`window-renderer.js`)
+- **AppleScript injection in `login-items.ts` closed.** `trashLoginItemTarget()` was STRIPPING
+  double-quotes from a path instead of escaping it, so a filename containing a backslash could
+  break out of the AppleScript string and run arbitrary code. Now the path is escaped via
+  `asStringLiteral()` (backslash THEN quote), and any path with a backslash/newline is hard-rejected
+  before a script is built and routed to the pure-Node fs.rename fallback. (`src/login-items.ts`)
+- **RAM engine can no longer freeze the menu-bar pill.** `getSystemRam()` (vm_stat) and
+  `listTopProcesses()` (ps) — the only engines on the live 5s poll — had NO timeout. A hang under
+  severe memory pressure would stall the pill forever and pile up child processes. Both now use the
+  timer+SIGKILL+done-flag pattern (3s cap, fallback value on timeout), and `tick()` is now
+  non-overlapping so a slow tick can't stack. (`src/ram.ts`, `src/main.ts`)
+- **Cross-volume (EXDEV) uninstall no longer lies about freed space.** When an app lived on a
+  different volume than ~/.Trash, the fallback COPIED the bundle into Trash and reported success
+  while the original stayed fully installed. Now it stages a recovery copy, relocates the ORIGINAL
+  into its own volume's `.Trashes`, and only credits freed bytes once the original is gone —
+  otherwise returns null so the UI reports failure instead of a fake "freed 400 MB". (`src/apps.ts`)
+- **Cleaning the Trash category now actually frees space.** It routed through `trashPath()`, which
+  (because ~/.Trash is an allowed root) only renamed items WITHIN the Trash and still credited the
+  bytes. Now the Trash category EMPTIES the Trash via Finder and credits only the bytes that truly
+  left (re-measured before/after). Other categories now also credit the real before/after shrink
+  instead of a blind estimate. (`src/junk.ts`)
+
+### Added
+- **Three regression tests** pinning the fixes: a backslash-path injection guard
+  (`login-items.selftest.js`), an EXDEV "never fakes a free" assertion (`apps.selftest.js`), and a
+  "trash category truly frees bytes" check with an injected sandbox-only emptier
+  (`junk.selftest.js`). All run under plain `node` against throwaway `os.tmpdir()` fixtures.
+
 ## [2026-06-24] — v2 (full window)
 
 ### Added

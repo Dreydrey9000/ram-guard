@@ -42,17 +42,32 @@ function ramInfoFallback(): RamInfo {
 // warning can fire too late (after the OS already killed something). vm_stat gives the true
 // picture: pages the compressor is holding (the strongest single OOM signal on macOS) plus
 // genuinely reclaimable pages. Falls back to os.freemem on non-darwin / on any error.
+// This engine is the ONLY one on the live 5s poll loop (main.ts tick()), so a hung vm_stat would
+// freeze the menu-bar pill forever. macOS has no `timeout` binary, so we arm our OWN timer and
+// SIGKILL the child if it overruns — exactly the timer+SIGKILL+done-flag pattern storage.ts uses.
+// On timeout we resolve the os.freemem() fallback so the pill keeps updating instead of stalling.
+const VM_STAT_TIMEOUT_MS = 3000;
+
 export function getSystemRam(): Promise<RamInfo> {
 	return new Promise(resolve => {
 		if (process.platform !== 'darwin') { resolve(ramInfoFallback()); return; }
 		const proc = spawn('vm_stat');
 		proc.stdout.setEncoding('utf8');
 		let out = '';
+		let done = false;
+		const finish = (value: RamInfo): void => {
+			if (done) { return; }
+			done = true;
+			clearTimeout(timer);
+			try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+			resolve(value);
+		};
+		const timer = setTimeout(() => finish(ramInfoFallback()), VM_STAT_TIMEOUT_MS);
 		proc.stdout.on('data', (d: string) => { out += d; });
 		proc.stderr.on('data', () => { /* ignore */ });
-		proc.on('error', () => resolve(ramInfoFallback()));
+		proc.on('error', () => finish(ramInfoFallback()));
 		proc.on('close', () => {
-			try { resolve(parseVmStat(out)); } catch { resolve(ramInfoFallback()); }
+			try { finish(parseVmStat(out)); } catch { finish(ramInfoFallback()); }
 		});
 	});
 }
@@ -85,15 +100,29 @@ const SYSTEM = new Set([
 	'mdworker', 'mdworker_shared', 'coreaudiod', 'cfprefsd', 'distnoted', 'hidd', 'powerd',
 ]);
 
+// Like getSystemRam, this runs on the live 5s poll loop, so `ps` MUST be timeout-guarded or a hung
+// ps freezes the pill (and, without an overlap guard in tick(), piles up children every 5s). Same
+// timer+SIGKILL+done-flag pattern; on timeout we resolve [] so the process list just goes empty.
+const PS_TIMEOUT_MS = 3000;
+
 export function listTopProcesses(topN = 8): Promise<Proc[]> {
 	return new Promise(resolve => {
 		const proc = spawn('ps', ['-axo', 'pid=,rss=,comm=']);
 		proc.stdout.setEncoding('utf8');
 		let out = '';
+		let done = false;
+		const finish = (value: Proc[]): void => {
+			if (done) { return; }
+			done = true;
+			clearTimeout(timer);
+			try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+			resolve(value);
+		};
+		const timer = setTimeout(() => finish([]), PS_TIMEOUT_MS);
 		proc.stdout.on('data', (d: string) => { out += d; });
 		proc.stderr.on('data', () => { /* ignore */ });
-		proc.on('error', () => resolve([]));
-		proc.on('close', () => resolve(parseProcs(out, topN)));
+		proc.on('error', () => finish([]));
+		proc.on('close', () => finish(parseProcs(out, topN)));
 	});
 }
 
