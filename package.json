@@ -23,7 +23,7 @@
     "mac": {
       "target": "dir",
       "category": "public.app-category.utilities",
-      "LSUIElement": true
+      "extendInfo": { "LSUIElement": 1 }
     }
   }
 }
