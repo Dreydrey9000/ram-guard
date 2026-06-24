@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "start": "npm run build && electron .",
-    "test": "npm run build && node selftest.js",
+    "test": "npm run build && node selftest.js && node selftest-storage.js && node selftest-large-files.js && node junk.selftest.js && node apps.selftest.js",
     "dist": "npm run build && electron-builder"
   },
   "devDependencies": {
@@ -19,7 +19,7 @@
   "build": {
     "appId": "com.drey.ramguard",
     "productName": "RAM Guard",
-    "files": ["dist/**/*", "index.html", "renderer.js", "preload.js"],
+    "files": ["dist/**/*", "index.html", "renderer.js", "window.html", "window-renderer.js", "preload.js"],
     "mac": {
       "target": "dir",
       "category": "public.app-category.utilities",

@@ -31,3 +31,8 @@ assert(procs[0].pid === 200, 'kill target is the heaviest pid in the group');
 assert(procs.length === 2, 'two real apps: Chrome + Slack');
 
 console.log('OK — parsers verified.', JSON.stringify(r));
+
+// Chain the login-items engine self-test so `npm test` covers it too. This file is
+// self-contained (it exits non-zero on failure) and touches ONLY throwaway fixtures it
+// creates itself — never a real login item or user file.
+require('./login-items.selftest.js');

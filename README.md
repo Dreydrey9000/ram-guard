@@ -1,17 +1,43 @@
 # RAM Guard
 
-A tiny macOS **menu bar app** that shows your Mac's *true* memory pressure and lets you free
-RAM by quitting the biggest apps — in one click.
+A macOS **menu bar app** that shows your Mac's *true* memory pressure, frees RAM by quitting
+the biggest apps, and cleans up disk space — junk, large old files, leftover apps, and noisy
+login items — all from one window. **Every removal moves to the Trash; nothing is ever
+hard-deleted, and nothing happens without a confirm dialog.**
 
-It lives up by your clock as a `42%` pill. Click it for a small panel:
+It lives up by your clock as a `42%` pill. Two surfaces:
 
-- **Memory used** — how full your RAM is.
-- **Compression (real pressure)** — the macOS signal that actually predicts a slowdown/freeze.
-  When this climbs, your Mac is about to start thrashing. The plain "free RAM" number hides this.
-- **Biggest memory users** — the apps eating the most memory, each with a **Quit** button
-  (with a confirm, so you don't close something with unsaved work).
+**The full window** (click the pill, or right-click → *Open RAM Guard*) — a 7-view dashboard:
+
+- **Overview** — a health ring, memory/storage/junk/apps tiles, your heaviest apps, and a
+  "Reclaim space" list.
+- **Memory** — live memory use + the real compression pressure bar + the apps to quit.
+- **Junk & Caches** — caches, logs, browser data, Trash — pick what to clear.
+- **Large & Old Files** — big files in your common folders you haven't opened in 90+ days.
+- **Applications** — installed apps by size, with **leftover-aware uninstall** (it trashes the
+  app *and* its caches/prefs/support files).
+- **Login Items** — what opens at startup, with a toggle to stop it (faster boot).
+- **Storage** — a stacked bar of what's eating your disk.
+
+**The pill panel** (right-click → *Memory panel*) — the original tiny glanceable panel:
+memory bar, the macOS compression bar, and the biggest memory users with a **Quit** button.
 
 > Built for someone who just wants their Mac to stop choking — no Activity Monitor spelunking.
+
+## Safety model (read this)
+
+This app can move files to the Trash, so the guardrails matter:
+
+- **Trash-only, never hard-delete.** Every clean / trash / uninstall routes through one shared
+  `trashHelper()` that *moves* items to the Trash (Finder "delete", with a `~/.Trash` move as a
+  fallback). There is zero `rm`/`unlink`/`fs.rm` on any user path anywhere in the code.
+- **Confirm-first.** Every destructive action opens a dialog listing the **exact** items, paths,
+  and sizes about to be touched, with **Cancel** as the default. Nothing acts until you confirm.
+- **Allowlisted roots only.** Scanners only ever look at a fixed set of known folders
+  (`~/Library/Caches`, `~/Library/Logs`, `~/.Trash`, `~/Downloads`, `~/Movies`, `~/Documents`,
+  `~/Desktop`, `/Applications`, `~/Applications`) — never an arbitrary path.
+- **Sandboxed UI.** The window runs with `contextIsolation`, no Node, a tight CSP, and a narrow
+  preload bridge. Rows are built with `textContent`, so a booby-trapped filename can't run code.
 
 ---
 
@@ -44,26 +70,38 @@ npm test         # runs the parser self-checks under plain node (no display need
 ## How it works (the 30-second version)
 
 ```
-vm_stat + ps  →  every 5s  →  menu bar pill "42%"
-       click  →  panel  →  [memory bar] [compression bar] [top apps] → Quit (confirm)
+menu bar pill "42%"  ←  vm_stat + ps every 5s
+        click  →  full window  →  7 views
+                     reads:  ram / storage / junk / large-files / apps / login-items engines
+                     acts:   renderer → window.ram bridge → main confirm dialog → trashHelper (move to Trash)
 ```
 
-- `vm_stat` (a built-in macOS command) gives the true memory picture, including the
-  *compressor* — the strongest single sign that you're running out of RAM.
-- `ps` lists every process and its memory; the app groups them by their parent app (so
-  Chrome's 30 helper processes become one summed "Google Chrome" row) and shows the top 8.
-- **Quit** sends a polite shutdown signal (`SIGTERM`) to the heaviest process in that group,
-  freeing the most memory immediately. It never force-kills.
+- **Read path:** each view asks the main process for live data over the preload bridge
+  (`window.ram.getStorage()`, `scanJunk()`, `scanLarge()`, `listApps()`, `listLogin()`), which
+  runs the matching engine module. The engines spawn built-in macOS commands (`vm_stat`, `ps`,
+  `df`, `du`, `find`, `mdls`, `system_profiler`, `osascript`), each timeout-guarded so one slow
+  call degrades a view gracefully instead of hanging.
+- **Action path:** every button (Quit / Clean / Trash / Uninstall / login toggle) calls a
+  `window.ram.*` action, which the main process gates behind a confirm dialog listing exactly
+  what's affected, then routes the move through the shared `trashHelper()` — Trash, never delete.
+- **Quit** sends a polite `SIGTERM` to the heaviest process in an app's group, freeing the most
+  memory immediately. It never force-kills.
 
 ## Files
 
 | File | What it is |
 |------|-----------|
-| `src/ram.ts` | The memory engine — `vm_stat`/`ps` parsing. Pure Node, no UI. |
-| `src/main.ts` | The Electron menu bar app — the pill, the panel, the quit confirm. |
-| `preload.js` | The narrow, sandboxed bridge between the panel and Node. |
-| `index.html` + `renderer.js` | The panel UI. |
-| `selftest.js` | Runnable checks for the parsers. |
+| `src/ram.ts` | Memory engine — `vm_stat`/`ps` parsing. Pure Node, no UI. |
+| `src/storage.ts` | Storage breakdown engine — `df`/`du`/`system_profiler` into a stacked bar. |
+| `src/junk.ts` | Junk/caches scan + Trash-only clean (allowlisted roots). |
+| `src/large-files.ts` | Large & old files scan + reveal + Trash. |
+| `src/apps.ts` | Installed apps + leftover-aware uninstall to Trash. |
+| `src/login-items.ts` | Login items list + toggle via System Events. |
+| `src/main.ts` | Electron main — both windows, the tray, all IPC handlers, every confirm dialog, the shared `trashHelper`. |
+| `preload.js` | The narrow, sandboxed bridge — the only door between the UI and Node. |
+| `index.html` + `renderer.js` | The small pill panel UI (unchanged). |
+| `window.html` + `window-renderer.js` | The full 7-view window UI, driven by real data. |
+| `selftest*.js` | Runnable parser + move-not-delete checks under plain node (no display). |
 
 ## Notes & limits
 
