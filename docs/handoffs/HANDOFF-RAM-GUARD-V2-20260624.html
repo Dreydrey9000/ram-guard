@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Handoff · RAM Guard v2</title>
+<!-- Single-file session handoff. Dual-purpose: visual dashboard for Drey (VARK) + complete resume context for the next Claude session. Opens offline; fonts degrade to system. No emoji (Drey's rule). -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0B0B0D; --panel:#141417; --panel2:#1B1B1F; --line:#2A2A30;
+    --bone:#F4F1EC; --mute:#9A958C; --gold:#C2A878; --gold-dim:#7d6e4f;
+    --done:#5ec98b; --now:#C2A878; --next:#6aa6e8;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --disp:'Big Shoulders Display','Arial Narrow',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--bone);font-family:var(--mono);
+    line-height:1.55;font-size:14px;-webkit-font-smoothing:antialiased;
+    padding:32px 20px 80px;max-width:980px;margin:0 auto;
+    animation:fade .5s ease both}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1}}
+  a{color:var(--gold)}
+  .goldline{height:3px;background:linear-gradient(90deg,transparent,var(--gold),transparent);
+    border-radius:3px;margin:0 0 22px}
+  h1{font-family:var(--disp);font-weight:800;font-size:42px;line-height:1;
+    letter-spacing:.5px;margin:0 0 6px;text-transform:uppercase}
+  h1 .sub{color:var(--gold)}
+  .meta{color:var(--mute);font-size:12.5px;margin-bottom:4px}
+  .meta b{color:var(--bone);font-weight:500}
+  .badge{display:inline-block;font-family:var(--disp);font-weight:700;font-size:13px;
+    letter-spacing:1px;text-transform:uppercase;padding:3px 12px;border-radius:20px;
+    border:1px solid var(--gold-dim);color:var(--gold);background:#1a160f}
+  .badge.blocked{color:#e8896a;border-color:#7d4f3f;background:#1f1310}
+  .badge.done{color:var(--done);border-color:#3f7d57;background:#10190f}
+
+  /* ---- the VARK diagram: 3-stage pipeline ---- */
+  .legend{color:var(--mute);font-size:11.5px;margin:26px 0 8px;text-transform:uppercase;letter-spacing:1.5px}
+  .flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:stretch;gap:0;margin-bottom:8px}
+  .stage{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 16px 14px;
+    transition:transform .15s,border-color .15s}
+  .stage:hover{transform:translateY(-3px)}
+  .stage .label{font-family:var(--disp);font-weight:700;font-size:15px;letter-spacing:1px;
+    text-transform:uppercase;display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .stage .count{margin-left:auto;font-size:12px;color:var(--mute)}
+  .stage .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+  .stage.done{border-top:3px solid var(--done)} .stage.done .label{color:var(--done)} .stage.done .dot{background:var(--done)}
+  .stage.now{border-top:3px solid var(--now)} .stage.now .label{color:var(--now)} .stage.now .dot{background:var(--now)}
+  .stage.next{border-top:3px solid var(--next)} .stage.next .label{color:var(--next)} .stage.next .dot{background:var(--next)}
+  .chips{display:flex;flex-direction:column;gap:6px}
+  .chip{font-size:12px;color:var(--bone);background:var(--panel2);border:1px solid var(--line);
+    border-radius:8px;padding:6px 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chip.more{color:var(--mute);border-style:dashed}
+  .arrow{display:flex;align-items:center;justify-content:center;color:var(--gold);font-size:24px;padding:0 6px}
+
+  /* ---- detail sections ---- */
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+  .card.full{grid-column:1 / -1}
+  .card h2{font-family:var(--disp);font-weight:700;font-size:18px;letter-spacing:1px;
+    text-transform:uppercase;margin:0 0 10px;color:var(--gold)}
+  ul{margin:0;padding-left:18px} li{margin:4px 0}
+  .tldr{font-size:15px;line-height:1.6;color:var(--bone);background:var(--panel);
+    border-left:3px solid var(--gold);border-radius:0 10px 10px 0;padding:14px 16px;margin:22px 0}
+  .dec{margin:6px 0} .dec b{color:var(--bone)} .dec .why{color:var(--mute)}
+  .files code{color:var(--gold);font-size:12.5px} .files .c{color:var(--mute)}
+  .ol{counter-reset:n;list-style:none;padding-left:0}
+  .ol li{counter-increment:n;padding-left:30px;position:relative;margin:7px 0}
+  .ol li::before{content:counter(n);position:absolute;left:0;top:0;width:20px;height:20px;
+    background:var(--next);color:#0B0B0D;border-radius:50%;font-weight:700;font-size:11px;
+    display:flex;align-items:center;justify-content:center;font-family:var(--disp)}
+
+  /* ---- resume prompt (for the next agent) ---- */
+  .resume{margin-top:26px;background:#0f0f12;border:1px solid var(--gold-dim);border-radius:14px;overflow:hidden}
+  .resume .bar{display:flex;align-items:center;gap:10px;padding:11px 16px;background:#171510;border-bottom:1px solid var(--line)}
+  .resume .bar .t{font-family:var(--disp);font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--gold);font-size:14px}
+  .resume .bar .hint{color:var(--mute);font-size:11px;margin-left:auto}
+  .copy{background:var(--gold);color:#0B0B0D;border:0;border-radius:7px;padding:5px 12px;
+    font-family:var(--disp);font-weight:700;letter-spacing:.5px;cursor:pointer;font-size:12px}
+  .copy:active{transform:scale(.96)}
+  pre{margin:0;padding:16px;white-space:pre-wrap;word-break:break-word;color:var(--bone);font-size:13px;line-height:1.6}
+  .foot{color:var(--mute);font-size:11px;text-align:center;margin-top:30px}
+  @media(max-width:760px){
+    h1{font-size:32px}
+    .flow{grid-template-columns:1fr;gap:10px}
+    .arrow{transform:rotate(90deg);padding:2px 0}
+    .grid{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+  <h1>Handoff · <span class="sub">RAM Guard v2</span></h1>
+  <div class="meta"><b>RAM Guard</b> · <span>~/My Apps/ram-guard</span></div>
+  <div class="meta">2026-06-24 &nbsp;·&nbsp; <span class="badge ">In progress</span></div>
+  <div class="goldline"></div>
+
+  <div class="tldr">RAM Guard v2 — a CleanMyMac-style full-window Mac app — is built, security-audited, hardened, and packaged as a double-click .app on branch v2-window-app. Verified green locally (tsc + 6 self-tests + clean launch, zero hard-delete in source). Awaiting Drey's live click-through of the delete features, then the ship decisions (push / merge / send Luis). 11 non-critical findings documented.</div>
+
+  <div class="legend">&rsaquo; The shape of it — read left to right</div>
+  <div class="flow">
+    <div class="stage done">
+      <div class="label"><span class="dot"></span>Done <span class="count">6</span></div>
+      <div class="chips"><div class="chip">v1 standalone menu-bar app (lifted from the Ursula ram-guard extension) shipped to Luis: private repo github.com/Dreydrey9000/ram-guard, collaborator itsluisc, texted.</div><div class="chip">v2 CleanMyMac-style window built by a fenced agentic loop (16 agents): 5 engine modules (storage/junk/large-files/apps/login-items) + tray-opened window + IPC + real renderer promoted from the approved mockup.</div><div class="chip">Adversarial security/disaster audit (3 specialists, 17 findings): all 5 critical/high fixed + the health-ring copy bug; regression tests added.</div><div class="chip more">+3 more</div></div>
+    </div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage now">
+      <div class="label"><span class="dot"></span>Now <span class="count">4</span></div>
+      <div class="chips"><div class="chip">On branch v2-window-app. NOT pushed, NOT merged to main (main is still v1). Nothing outward done.</div><div class="chip">Commits: 85e8b07 fence, a8821e1 v2 build, 27f710d hardening, + build-config fix (HEAD). Tree clean.</div><div class="chip">Verified green locally only. The .app is at dist/mac-arm64/RAM Guard.app (gitignored, local).</div><div class="chip more">+1 more</div></div>
+    </div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage next">
+      <div class="label"><span class="dot"></span>Next <span class="count">4</span></div>
+      <div class="chips"><div class="chip">LIVE CLICK-THROUGH (the ship gate): launch the app, click the menu-bar pill to open the window, exercise each of the 7 views, and run ONE real delete (junk or a large file) to confirm the destructive paths behave on real files. Nothing destructive has run for real yet.</div><div class="chip">Triage the 11 remaining medium/low audit findings (listed in gotchas) — decide which to fix.</div><div class="chip">Ship decisions (all held for Drey): push branch / open PR / merge to main / send v2 to Luis.</div><div class="chip more">+1 more</div></div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h2>What Was Done</h2><ul><li>v1 standalone menu-bar app (lifted from the Ursula ram-guard extension) shipped to Luis: private repo github.com/Dreydrey9000/ram-guard, collaborator itsluisc, texted.</li><li>v2 CleanMyMac-style window built by a fenced agentic loop (16 agents): 5 engine modules (storage/junk/large-files/apps/login-items) + tray-opened window + IPC + real renderer promoted from the approved mockup.</li><li>Adversarial security/disaster audit (3 specialists, 17 findings): all 5 critical/high fixed + the health-ring copy bug; regression tests added.</li><li>Fixed: AppleScript injection on the login-item trash path; apps.ts EXDEV uninstall that copied to Trash but never removed the original and faked a free; ram.ts vm_stat/ps hang-the-pill on the 5s poll (now timeout+SIGKILL+fallback); junk 'empty Trash' that renamed items back into Trash.</li><li>Independently re-verified by hand: tsc clean, 6/6 self-tests green (injection-guard + EXDEV + trash-truly-frees), zero hard-delete in src/.</li><li>Packaged the double-click app: dist/mac-arm64/RAM Guard.app (564MB, unsigned) — verified it boots clean.</li></ul></div>
+    <div class="card"><h2>Current State</h2><ul><li>On branch v2-window-app. NOT pushed, NOT merged to main (main is still v1). Nothing outward done.</li><li>Commits: 85e8b07 fence, a8821e1 v2 build, 27f710d hardening, + build-config fix (HEAD). Tree clean.</li><li>Verified green locally only. The .app is at dist/mac-arm64/RAM Guard.app (gitignored, local).</li><li>Two background hardening workflows ran (~2.1M tokens); the 2nd's final verify hit a transient API rate-limit, so it was re-verified by hand.</li></ul></div>
+    <div class="card full"><h2>What's Next <span style="font-size:11px;color:var(--mute);font-weight:400">(ordered — start at 1)</span></h2><ul class="ol"><li>LIVE CLICK-THROUGH (the ship gate): launch the app, click the menu-bar pill to open the window, exercise each of the 7 views, and run ONE real delete (junk or a large file) to confirm the destructive paths behave on real files. Nothing destructive has run for real yet.</li><li>Triage the 11 remaining medium/low audit findings (listed in gotchas) — decide which to fix.</li><li>Ship decisions (all held for Drey): push branch / open PR / merge to main / send v2 to Luis.</li><li>Optional polish: add a custom app icon (default Electron icon now) and code-sign (so first open skips the Gatekeeper warning).</li></ul></div>
+    <div class="card"><h2>Key Decisions</h2><div class="dec">• <b>v2 lives in the same repo as v1, reusing src/ram.ts</b><br><span class="why">↳ one Electron app with a tray pill + full window sharing one engine — simpler than a second repo</span></div><div class="dec">• <b>Built all phases in a fenced agentic loop</b><br><span class="why">↳ Drey's directive; the fence kept every delete Trash-only + confirm-first and tested only against tmpdir fixtures, never real files</span></div><div class="dec">• <b>Committed the package.json build-config fix during away-mode without asking</b><br><span class="why">↳ .app would not package without it, it is verified, and 'run all phases until done' covers packaging — Drey was unreachable</span></div><div class="dec">• <b>Held all outward actions (push/merge/Luis)</b><br><span class="why">↳ Drey's standing rule — outward steps are his call</span></div></div>
+    <div class="card"><h2>Gotchas</h2><ul><li>Destructive paths have been tested ONLY against temp fixtures — no real delete has run. Needs a human click-through before shipping.</li><li>The .app is UNSIGNED: first open needs right-click then Open (Gatekeeper). It uses the default Electron icon.</li><li>11 remaining audit findings (medium/low, none safety-critical): (1) junk-clean confirm shows only category labels+size, not itemized, with a TOCTOU window; (2) login-items setLoginItem uses a denylist-guarded raw osascript concat — proven non-exploitable today but fragile; (3) storage.ts system_profiler first-match is wrong on multi-volume Macs (fallback-only path); (4) large-files runStat/runMdls error handler skips clearTimeout (timer hygiene); (5) login re-enable toggle is a silent no-op with no feedback; (6) revealLargeFile's 'open -R' has no allowlist + no timeout; (7) junk freedBytes can over-report when most items fail to move; (8) df mount-path token index is fragile on space-in-device mounts. Full detail: the task output at /private/tmp/claude-501/-Users-andrethomas-Desktop/4297ba26-bf2b-474d-aff9-b569faca6048/tasks/whjxidukk.output</li><li>Memory index MEMORY.md is over its read-size limit and still needs a safe compaction pass.</li></ul></div>
+    <div class="card full files"><h2>Files Touched</h2><ul><li><code>src/storage.ts / junk.ts / large-files.ts / apps.ts / login-items.ts</code> <span class="c">— new pure-Node macOS engine modules (df/du/find/mdls/system_profiler/osascript), each with a fixture-only self-test</span></li><li><code>src/main.ts</code> <span class="c">— full window + tray Open + IPC handlers; shared confirm-gated trashHelper (Finder delete + ~/.Trash rename fallback); allowlisted roots</span></li><li><code>preload.js</code> <span class="c">— narrow sandboxed bridge for all v2 channels</span></li><li><code>window.html + window-renderer.js</code> <span class="c">— the real UI promoted from design/mockup.html, driven by live IPC data; rows via textContent not innerHTML</span></li><li><code>src/ram.ts</code> <span class="c">— timeout+SIGKILL guards on vm_stat/ps so the poll loop can't hang</span></li><li><code>package.json</code> <span class="c">— v2 build config (files + mac.extendInfo LSUIElement)</span></li><li><code>CONTEXT.md</code> <span class="c">— the fence (phased, Trash-only, fixture-tested)</span></li></ul></div>
+  </div>
+
+  <div class="resume">
+    <div class="bar">
+      <span class="t">&rsaquo; Resume Prompt</span>
+      <span class="hint">paste into a fresh session — gives the next Claude everything</span>
+      <button class="copy" onclick="cp(this)">Copy</button>
+    </div>
+    <pre id="rp">I'm resuming RAM Guard v2 (~/My Apps/ram-guard, branch v2-window-app). Read the handoff at ~/My Apps/ram-guard/docs/handoffs/HANDOFF-RAM-GUARD-V2-20260624.html. Start with the live click-through: launch dist/mac-arm64/RAM Guard.app (or npm start), click the menu-bar pill to open the window, exercise each of the 7 views, and run ONE real delete (junk or a large file) to gate the destructive features — then we decide push / merge to main / send v2 to Luis. 11 non-critical findings are listed in the handoff for triage.</pre>
+  </div>
+
+  <div class="foot">Generated Jun 24, 2026, 7:11 PM · single-file handoff · /handoff</div>
+<script>
+  function cp(b){var t=document.getElementById('rp').innerText;
+    navigator.clipboard.writeText(t).then(function(){var o=b.innerText;b.innerText='Copied';setTimeout(function(){b.innerText=o},1400)})}
+</script>
+</body>
+</html>
