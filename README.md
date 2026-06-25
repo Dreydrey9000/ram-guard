@@ -24,6 +24,12 @@ memory bar, the macOS compression bar, and the biggest memory users with a **Qui
 
 > Built for someone who just wants their Mac to stop choking — no Activity Monitor spelunking.
 
+## Why I built this
+
+My Mac kept choking and the popular cleaner wanted 90 dollars a year. So instead of paying for it, I described what I wanted to an AI coding agent and had RAM Guard built, security-audited, and open-sourced in a day.
+
+> Instead of paying for a bloated Mac cleaner, I used an AI coding agent to build a free open source RAM monitor in a day, proof you can build and own your own tools instead of renting them forever.
+
 ## Safety model (read this)
 
 This app can move files to the Trash, so the guardrails matter:
