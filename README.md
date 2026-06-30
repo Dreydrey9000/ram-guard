@@ -1,26 +1,36 @@
 # RAM Guard
 
-A macOS **menu bar app** that shows your Mac's *true* memory pressure, frees RAM by quitting
-the biggest apps, and cleans up disk space — junk, large old files, leftover apps, and noisy
-login items — all from one window. **Every removal moves to the Trash; nothing is ever
-hard-deleted, and nothing happens without a confirm dialog.**
+A tiny (~1.7 MB) **native** macOS menu bar app that shows your Mac's *true* memory pressure,
+warns you when you cross a memory limit **you** set, frees RAM by quitting the biggest apps, and
+cleans up disk space — junk, large old files, leftover apps, and noisy login items — from one
+window. **Every removal moves to the Trash; nothing is ever hard-deleted, and nothing happens
+without a confirm dialog.**
 
-It lives up by your clock as a `42%` pill. Two surfaces:
+Built in Swift / SwiftUI. It lives up by your clock as a `42%` pill. Two surfaces:
 
-**The full window** (click the pill, or right-click → *Open RAM Guard*) — a 7-view dashboard:
+**The pill panel** (click the menu-bar pill) — a compact, glanceable popover: the live memory bar,
+the real compression pressure, your biggest memory users with a **Quit** button, an **Alert above
+__%** slider (your memory limit), and **Free up RAM**.
 
-- **Overview** — a health ring, memory/storage/junk/apps tiles, your heaviest apps, and a
-  "Reclaim space" list.
-- **Memory** — live memory use + the real compression pressure bar + the apps to quit.
-- **Junk & Caches** — caches, logs, browser data, Trash — pick what to clear.
-- **Large & Old Files** — big files in your common folders you haven't opened in 90+ days.
-- **Applications** — installed apps by size, with **leftover-aware uninstall** (it trashes the
-  app *and* its caches/prefs/support files).
+**The full window** (click the dock icon) — a big, resizable, CleanMyMac-style window with a left
+sidebar and six sections:
+
+- **RAM** — live memory use + true compression pressure + the apps to quit + your alert slider.
+- **Junk** — caches, logs, browser data, Trash — pick what to clear.
+- **Large Files** — big files (100 MB+) in your common folders you haven't opened in 90+ days.
+- **Apps** — installed apps by size, with **leftover-aware uninstall** (it trashes the app *and*
+  its caches/prefs/support files).
 - **Login Items** — what opens at startup, with a toggle to stop it (faster boot).
 - **Storage** — a stacked bar of what's eating your disk.
 
-**The pill panel** (right-click → *Memory panel*) — the original tiny glanceable panel:
-memory bar, the macOS compression bar, and the biggest memory users with a **Quit** button.
+### Memory-limit alerts
+
+Set a line on the **Alert above __%** slider (default 85%). When your memory crosses it, the pill
+goes **red** with a `! NN%`, the bar turns red, and an **"Over your NN% limit"** banner appears with
+a one-tap **Free up**. It fires *once* per real crossing (hysteresis — it re-arms only after you
+drop back under), so it warns you without nagging. A note on what's possible: macOS can't *hard-cap*
+total RAM (that would need a kernel extension, which Apple Silicon doesn't allow) — so RAM Guard
+warns and gives you a one-click fix, which is the real-world version of "keep me under my limit".
 
 > Built for someone who just wants their Mac to stop choking — no Activity Monitor spelunking.
 
@@ -32,87 +42,67 @@ My Mac kept choking and the popular cleaner wanted 90 dollars a year. So instead
 
 ## Safety model (read this)
 
-This app can move files to the Trash, so the guardrails matter:
+This app can move files to the Trash and quit apps, so the guardrails matter:
 
-- **Trash-only, never hard-delete.** Every clean / trash / uninstall routes through one shared
-  `trashHelper()` that *moves* items to the Trash (Finder "delete", with a `~/.Trash` move as a
-  fallback). There is zero `rm`/`unlink`/`fs.rm` on any user path anywhere in the code.
-- **Confirm-first.** Every destructive action opens a dialog listing the **exact** items, paths,
-  and sizes about to be touched, with **Cancel** as the default. Nothing acts until you confirm.
-- **Allowlisted roots only.** Scanners only ever look at a fixed set of known folders
+- **Trash-only, never hard-delete.** Every clean / trash / uninstall routes through the native
+  `FileManager.trashItem` API — a *move* to the Trash with macOS put-back, recoverable. There is
+  zero `rm`/`unlink` on any user path anywhere in the code. (Emptying the Trash is the one exception,
+  and it goes through Finder.)
+- **Confirm-first.** Every destructive action opens a dialog naming the **exact** items, paths, and
+  sizes about to be touched, with **Cancel** as the default. Nothing acts until you confirm.
+- **Allowlisted, symlink-safe roots only.** Scanners only ever touch a fixed set of known folders
   (`~/Library/Caches`, `~/Library/Logs`, `~/.Trash`, `~/Downloads`, `~/Movies`, `~/Documents`,
-  `~/Desktop`, `/Applications`, `~/Applications`) — never an arbitrary path.
-- **Sandboxed UI.** The window runs with `contextIsolation`, no Node, a tight CSP, and a narrow
-  preload bridge. Rows are built with `textContent`, so a booby-trapped filename can't run code.
+  `~/Desktop`, `~/Music`, `~/Pictures`, `/Applications`, `~/Applications`). Every path is resolved
+  through its symlinks before the allowlist check, and symlinked items are skipped — so nothing can
+  smuggle a path out of the allowlist.
+- **No false alarms, no kill-loops.** Memory pressure comes straight from the kernel
+  (`host_statistics64`, compression included), so it never shows a false 100%. The quit path
+  re-validates each process's kernel start-time before signaling, so a recycled PID can't be hit.
 
----
-
-## Run it (development)
-
-```bash
-npm install
-npm start        # builds + launches the menu bar app
-```
-
-Look up by the clock — you'll see the percentage pill. Click it.
-
-## Build a real app you can double-click
+## Build it
 
 ```bash
-npm run dist     # → dist/mac/RAM Guard.app  (drag it to /Applications)
+cd native
+./build.sh install      # compiles, bundles "RAM Guard.app", ad-hoc signs, installs to /Applications, relaunches
+./build.sh              # build + bundle only (no install)
 ```
 
-It has **no Dock icon** by design — it's menu bar only. To quit it, **right-click** the
-pill → *Quit RAM Guard*.
+Requires the Xcode command-line tools (`swiftc`). The app is **menu bar + window**; the pill lives by
+your clock, and the full window opens from the dock icon.
 
-## Verify the logic
+### Verify the safety logic
 
 ```bash
-npm test         # runs the parser self-checks under plain node (no display needed)
+cd native
+d=/tmp/rgtest_build; mkdir -p $d; cp selftest.swift $d/main.swift
+swiftc Common.swift DiskEngines.swift $d/main.swift -o /tmp/rgtest && /tmp/rgtest
+# prints "ALL DISK CHECKS PASSED" — proves Trash-only, the allowlist (incl. symlink-escape), and the parsers
 ```
 
----
+### Installing on another Mac
 
-## How it works (the 30-second version)
+RAM Guard is **ad-hoc signed**, not yet notarized, so the first time you open it on another Mac,
+**right-click the app → Open** to clear Gatekeeper. Notarization (for friction-free distribution)
+needs an Apple Developer ID — `native/notarize.sh` runs the whole sign + submit + staple in one
+command once that cert exists.
 
-```
-menu bar pill "42%"  ←  vm_stat + ps every 5s
-        click  →  full window  →  7 views
-                     reads:  ram / storage / junk / large-files / apps / login-items engines
-                     acts:   renderer → window.ram bridge → main confirm dialog → trashHelper (move to Trash)
-```
-
-- **Read path:** each view asks the main process for live data over the preload bridge
-  (`window.ram.getStorage()`, `scanJunk()`, `scanLarge()`, `listApps()`, `listLogin()`), which
-  runs the matching engine module. The engines spawn built-in macOS commands (`vm_stat`, `ps`,
-  `df`, `du`, `find`, `mdls`, `system_profiler`, `osascript`), each timeout-guarded so one slow
-  call degrades a view gracefully instead of hanging.
-- **Action path:** every button (Quit / Clean / Trash / Uninstall / login toggle) calls a
-  `window.ram.*` action, which the main process gates behind a confirm dialog listing exactly
-  what's affected, then routes the move through the shared `trashHelper()` — Trash, never delete.
-- **Quit** sends a polite `SIGTERM` to the heaviest process in an app's group, freeing the most
-  memory immediately. It never force-kills.
-
-## Files
+## Files (native)
 
 | File | What it is |
 |------|-----------|
-| `src/ram.ts` | Memory engine — `vm_stat`/`ps` parsing. Pure Node, no UI. |
-| `src/storage.ts` | Storage breakdown engine — `df`/`du`/`system_profiler` into a stacked bar. |
-| `src/junk.ts` | Junk/caches scan + Trash-only clean (allowlisted roots). |
-| `src/large-files.ts` | Large & old files scan + reveal + Trash. |
-| `src/apps.ts` | Installed apps + leftover-aware uninstall to Trash. |
-| `src/login-items.ts` | Login items list + toggle via System Events. |
-| `src/main.ts` | Electron main — both windows, the tray, all IPC handlers, every confirm dialog, the shared `trashHelper`. |
-| `preload.js` | The narrow, sandboxed bridge — the only door between the UI and Node. |
-| `index.html` + `renderer.js` | The small pill panel UI (unchanged). |
-| `window.html` + `window-renderer.js` | The full 7-view window UI, driven by real data. |
-| `selftest*.js` | Runnable parser + move-not-delete checks under plain node (no display). |
+| `native/RAMGuard.swift` | RAM engine (`host_statistics64` + `ps`), the kill path, the threshold alert, the menu-bar Dashboard, and the sidebar `MainWindow`. |
+| `native/DiskEngines.swift` | The five disk engines — junk, large-files, apps, login-items, storage. Pure logic, fixture-tested. |
+| `native/DiskViews.swift` | The five disk views + the shared dark-theme components. |
+| `native/Common.swift` | Shared shell runner (timeout-guarded), the Trash helper, and the symlink-safe path allowlist. |
+| `native/App.swift` | The `@main` entry — the window + the menu-bar extra. |
+| `native/selftest.swift` | Runnable safety + parser checks (Trash-only proof, allowlist, symlink-escape). |
+| `native/build.sh` / `native/notarize.sh` | One-command build/install, and the ready-to-run notarize pipeline. |
+
+> The original Electron version lives under `src/` (legacy). The native Swift app above supersedes it.
 
 ## Notes & limits
 
-- **macOS only.** The pressure math uses macOS commands; on other platforms it falls back to
-  a rough estimate and the app isn't really meant for them.
-- Quitting frees the most RAM in one shot but may not *gracefully* close a whole multi-process
-  app. Good enough for "free RAM now"; a clean per-app quit is the obvious next upgrade.
-- Lifted from the Ursula RAM Guard extension — same engine, no editor required.
+- **macOS only**, Apple Silicon target. Needs macOS 14+.
+- Quitting an app frees the most RAM in one shot by SIGTERM-ing its whole process group.
+- macOS can't enforce a hard memory ceiling for apps it didn't launch — RAM Guard's limit is a
+  warn-and-act alert, not a kernel-level cap.
