@@ -3,3 +3,8 @@ dist/
 release/
 *.log
 .DS_Store
+
+# native Swift build artifacts (rebuilt by native/build.sh)
+native/RAMGuard
+native/RAM Guard.app/
+*.dSYM/

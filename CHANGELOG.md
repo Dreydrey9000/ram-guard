@@ -1,5 +1,119 @@
 # Changelog
 
+## [2026-06-30] — memory-limit alerts + first commit of the native source
+
+### Added — set a memory line, get warned when you cross it
+- **Threshold slider** in the RAM view (and menu-bar popover): "Alert above [50–95%]", persisted via
+  `@AppStorage`/UserDefaults (default 85%).
+- **Crossing the line warns you** three guaranteed ways: the menu-bar pill goes red + shows `! NN%`,
+  the bar/gauge turn red, and an in-app **"Over your NN% limit"** banner appears with a one-tap
+  "Free up". The pill's red state is now tied to *your* number, not a hardcoded 88%.
+- **Hysteresis, not flapping** (`RamEngine.checkThreshold`): fires once on a real upward crossing,
+  re-arms only after usage drops 5% below the line. Does NOT fire on launch-while-already-high or
+  when you drag the slider (re-seeds silently). A dock bounce (`requestUserAttention`) is the active
+  nudge; a `UNUserNotificationCenter` system notification is best-effort on top.
+
+### Decided (skeptic pass, then revised)
+- **No auto-quit.** A skeptic review flagged that "auto free up when over" can cascade-kill apps
+  (quitting 2 apps doesn't guarantee a drop below the line → next tick quits 2 more → loops, data
+  loss). Dropped it; the warning + one-tap "Free up" is the safe, sufficient design.
+- **Notifications are pill+banner+dock-bounce first.** `UNUserNotificationCenter` silently no-ops on
+  an ad-hoc-signed app (auth returns granted, `usernoted` drops it), so it's a bonus, never relied on.
+
+### Signing / notarization — honest status
+- App is **ad-hoc signed** (runs locally; others must right-click → Open to bypass Gatekeeper).
+- **Notarization is blocked on Apple Developer enrollment** — this machine has 0 signing identities /
+  0 Developer ID certs. It needs a paid membership ($99/yr) + a Developer ID Application cert +
+  notarytool credentials. `native/notarize.sh` is written and ready to run the moment those exist.
+
+### Repo
+- First commit of the `native/` Swift source (was untracked). Build artifacts (`native/RAMGuard`,
+  `native/RAM Guard.app/`) gitignored. `native/` supersedes the Electron `src/`; committed to the
+  local branch only — the public repo flip is still a separate, pending decision.
+
+## [2026-06-27] — native v2 (Sakana criticals fixed + disk views ported)
+
+### Fixed (Sakana adversarial review — `native/RAMGuard.swift`)
+- **C1 — pid-reuse can no longer kill the wrong process.** Each app group now carries every pid
+  with its kernel start-time (`sysctl KERN_PROC_PID` `p_starttime`). Right before a `kill`, the
+  start-time is re-validated; if the pid was recycled onto a new process (or already died), it's
+  skipped. `kill` failures surface `errno` (ESRCH/EPERM) to stderr. Why: PIDs captured during a
+  5s tick could be recycled before the click, sending SIGTERM to an innocent editor/build job.
+- **C2 — "Quit Chrome" now quits Chrome, not one helper.** App rows store ALL pids in the group
+  (parent + every renderer/GPU helper) and signal the whole group, instead of just the single
+  biggest pid. Why: killing one renderer freed nothing while the UI claimed it freed GBs.
+- **H1 — subprocess calls are timeout-guarded.** `shell()` reads on a background thread with a
+  deadline and `terminate()`+SIGKILL fallback, so a wedged `ps`/`du` under memory pressure can't
+  strand a worker thread. The RAM read no longer shells out at all (see H3).
+- **H2 — the poll Timer is stored + invalidated.** `private var timer` + `deinit { timer?.invalidate() }`
+  so a deallocated engine can't leave an orphan timer firing forever.
+- **H3 — no more false 100%.** RAM pressure now comes straight from the kernel
+  (`host_statistics64 HOST_VM_INFO64`) and **counts the compressor** (used = wired + compressed +
+  app memory, ~Activity Monitor "Memory Used"). On any read failure it shows "—", never a false
+  100% that could trigger panic-quits. Verified: matches raw `vm_stat` (16 GB compressor on a
+  pressured 36 GB machine = 86% used, which the old inactive-as-free math hid).
+
+### Added
+- **Disk views ported from Electron to native Swift** (`native/Common.swift`, `DiskEngines.swift`,
+  `DiskViews.swift`): Junk (caches/logs/browser/Trash), Large & Old Files (100MB+/90d+), Uninstall
+  Apps (bundle + leftovers), Login Items, Storage breakdown. The window is now a TabView (RAM +
+  5 disk tabs); the menu-bar pill stays RAM-only and lean.
+- **Trash-only guarantee, the native way.** Every destructive path uses `FileManager.trashItem`
+  (recoverable, macOS put-back, collision-safe) — there is no `rm`/`unlink` anywhere. Replaces
+  ~400 lines of Electron osascript+rename+EXDEV handling. Empty-Trash (the one reclaim case) still
+  routes through Finder. Each engine validates an allowlist before any move.
+- **`native/selftest.swift`** — proves the Trash-only property (file lands in ~/.Trash, source
+  gone), the allowlist (rejects `/etc/passwd` + segment-boundary tricks), and all pure parsers.
+  19/19 pass. **Run before shipping any disk-engine change.**
+- **`native/build.sh`** — one command to compile (`swiftc native/*.swift`), bundle, ad-hoc sign,
+  and `install` to /Applications.
+
+### Hardened (Sakana fugu-ultra adversarial pass, round 2)
+Ran a second Sakana review against the criticals fixes + the new disk engines. Verified each
+finding against the real code (two "criticals" were partly overstated — the leftover delete was
+already allowlist-gated), applied the genuine ones:
+- **`Paths.isUnder` now resolves symlinks** (`resolvingSymlinksInPath` both sides) so an
+  intermediate symlink can't smuggle a path out of the allowlist. Root cause behind several findings.
+- **JunkEngine cleans per-item, not per-dir** — each child is symlink-skipped (`isSymlink`, lstat)
+  and re-checked with `isUnder`, instead of trusting the parent dir's check.
+- **Large-files `validTarget` rejects symlinks.**
+- **Bundle-id sanitized** before path interpolation in app-uninstall leftovers (no `/` or `..`).
+- **Login `safeName` rejects all newlines/control chars** (incl. U+2028/U+2029/U+0085) — closes the
+  osascript string-literal break-out. Self-test grew a symlink-escape regression; 21/21 pass.
+  (Accepted as low-risk on a single-user local tool: live-cache deletion is inherent to cache
+  cleaning — mitigated by Trash-recoverable + confirm; TOCTOU file-swap needs local write access.)
+
+### Fixed + redesigned — UI was white-on-white in Dark Mode
+- **Bug:** disk-view rows used bare `Text(...)` with no color, inheriting the system label color =
+  WHITE in macOS Dark Mode, on a hardcoded light background → invisible "Quit"/file names (Drey
+  couldn't read what he'd be quitting).
+- **Fix (root cause):** forced `.preferredColorScheme(.dark)` + explicit colors on every label, so
+  no text depends on system appearance anymore.
+- **Redesign (dark "command deck"):** repainted to RAM Guard's own handoff palette — charcoal
+  `#0B0B0D`, bone `#F4F1EC` text, gold `#D1B47F` accent, warm-red `#E96F56` danger. Panel-card rows
+  with depth, an animated glowing gold RAM bar, reusable `GhostButton` (gold / danger ghost) +
+  `PrimaryButton` (gold fill, ink text), hover states. Quit/Trash/Uninstall now clearly readable;
+  destructive actions tinted red. Bone-on-charcoal ≈ 15:1 contrast (WCAG AAA).
+- Split `@main` into `App.swift` so the views compile into an offline `ImageRenderer` harness —
+  visually verified to PNG (no Screen Recording permission needed).
+
+### Added — big resizable window (CleanMyMac-style)
+- Replaced the cramped 460×540 tab strip with a **large, resizable, floating window**: a left
+  sidebar (app title + always-on memory gauge + 6 nav sections with gold-highlighted selection) and
+  a big content area. Default 980×680, min 860×580, freely resizable.
+- Engines hoisted to `MainWindow` and **injected** into each view (`@ObservedObject`, not
+  `@StateObject`), so switching sections preserves each section's scan state — no re-scan per click.
+- The menu-bar extra stays the compact 380×470 RAM popover (`Dashboard` made flex-frame; pinned to
+  380×470 only at the menu-bar call site). Verified via offline `ImageRenderer` of the full window.
+
+### Not done / caveats
+- Live window verified by offline render (full sidebar window + disk rows) + clean launch. Drey:
+  glance at the running app to confirm the menu-bar popover + the live process list in the RAM tab
+  (the offline renderer can't lay out ScrollViews — live it fills with processes).
+- App is ad-hoc signed, local, not notarized. `native/` source still uncommitted; public repo main
+  still shows the Electron code.
+- Empty-Trash + Login-Items need macOS Automation permission (Finder/System Events) — prompts once.
+
 ## [2026-06-24] — v2.1 (security + correctness audit fixes)
 
 ### Fixed

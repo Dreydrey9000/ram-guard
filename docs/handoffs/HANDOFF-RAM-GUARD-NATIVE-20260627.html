@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Handoff · RAM Guard Native</title>
+<!-- Single-file session handoff. Dual-purpose: visual dashboard for Drey (VARK) + complete resume context for the next Claude session. Opens offline; fonts degrade to system. No emoji (Drey's rule). -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0B0B0D; --panel:#141417; --panel2:#1B1B1F; --line:#2A2A30;
+    --bone:#F4F1EC; --mute:#9A958C; --gold:#C2A878; --gold-dim:#7d6e4f;
+    --done:#5ec98b; --now:#C2A878; --next:#6aa6e8;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --disp:'Big Shoulders Display','Arial Narrow',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--bone);font-family:var(--mono);
+    line-height:1.55;font-size:14px;-webkit-font-smoothing:antialiased;
+    padding:32px 20px 80px;max-width:980px;margin:0 auto;
+    animation:fade .5s ease both}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1}}
+  a{color:var(--gold)}
+  .goldline{height:3px;background:linear-gradient(90deg,transparent,var(--gold),transparent);
+    border-radius:3px;margin:0 0 22px}
+  h1{font-family:var(--disp);font-weight:800;font-size:42px;line-height:1;
+    letter-spacing:.5px;margin:0 0 6px;text-transform:uppercase}
+  h1 .sub{color:var(--gold)}
+  .meta{color:var(--mute);font-size:12.5px;margin-bottom:4px}
+  .meta b{color:var(--bone);font-weight:500}
+  .badge{display:inline-block;font-family:var(--disp);font-weight:700;font-size:13px;
+    letter-spacing:1px;text-transform:uppercase;padding:3px 12px;border-radius:20px;
+    border:1px solid var(--gold-dim);color:var(--gold);background:#1a160f}
+  .badge.blocked{color:#e8896a;border-color:#7d4f3f;background:#1f1310}
+  .badge.done{color:var(--done);border-color:#3f7d57;background:#10190f}
+
+  /* ---- the VARK diagram: 3-stage pipeline ---- */
+  .legend{color:var(--mute);font-size:11.5px;margin:26px 0 8px;text-transform:uppercase;letter-spacing:1.5px}
+  .flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:stretch;gap:0;margin-bottom:8px}
+  .stage{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 16px 14px;
+    transition:transform .15s,border-color .15s}
+  .stage:hover{transform:translateY(-3px)}
+  .stage .label{font-family:var(--disp);font-weight:700;font-size:15px;letter-spacing:1px;
+    text-transform:uppercase;display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .stage .count{margin-left:auto;font-size:12px;color:var(--mute)}
+  .stage .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+  .stage.done{border-top:3px solid var(--done)} .stage.done .label{color:var(--done)} .stage.done .dot{background:var(--done)}
+  .stage.now{border-top:3px solid var(--now)} .stage.now .label{color:var(--now)} .stage.now .dot{background:var(--now)}
+  .stage.next{border-top:3px solid var(--next)} .stage.next .label{color:var(--next)} .stage.next .dot{background:var(--next)}
+  .chips{display:flex;flex-direction:column;gap:6px}
+  .chip{font-size:12px;color:var(--bone);background:var(--panel2);border:1px solid var(--line);
+    border-radius:8px;padding:6px 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chip.more{color:var(--mute);border-style:dashed}
+  .arrow{display:flex;align-items:center;justify-content:center;color:var(--gold);font-size:24px;padding:0 6px}
+
+  /* ---- detail sections ---- */
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+  .card.full{grid-column:1 / -1}
+  .card h2{font-family:var(--disp);font-weight:700;font-size:18px;letter-spacing:1px;
+    text-transform:uppercase;margin:0 0 10px;color:var(--gold)}
+  ul{margin:0;padding-left:18px} li{margin:4px 0}
+  .tldr{font-size:15px;line-height:1.6;color:var(--bone);background:var(--panel);
+    border-left:3px solid var(--gold);border-radius:0 10px 10px 0;padding:14px 16px;margin:22px 0}
+  .dec{margin:6px 0} .dec b{color:var(--bone)} .dec .why{color:var(--mute)}
+  .files code{color:var(--gold);font-size:12.5px} .files .c{color:var(--mute)}
+  .ol{counter-reset:n;list-style:none;padding-left:0}
+  .ol li{counter-increment:n;padding-left:30px;position:relative;margin:7px 0}
+  .ol li::before{content:counter(n);position:absolute;left:0;top:0;width:20px;height:20px;
+    background:var(--next);color:#0B0B0D;border-radius:50%;font-weight:700;font-size:11px;
+    display:flex;align-items:center;justify-content:center;font-family:var(--disp)}
+
+  /* ---- resume prompt (for the next agent) ---- */
+  .resume{margin-top:26px;background:#0f0f12;border:1px solid var(--gold-dim);border-radius:14px;overflow:hidden}
+  .resume .bar{display:flex;align-items:center;gap:10px;padding:11px 16px;background:#171510;border-bottom:1px solid var(--line)}
+  .resume .bar .t{font-family:var(--disp);font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--gold);font-size:14px}
+  .resume .bar .hint{color:var(--mute);font-size:11px;margin-left:auto}
+  .copy{background:var(--gold);color:#0B0B0D;border:0;border-radius:7px;padding:5px 12px;
+    font-family:var(--disp);font-weight:700;letter-spacing:.5px;cursor:pointer;font-size:12px}
+  .copy:active{transform:scale(.96)}
+  pre{margin:0;padding:16px;white-space:pre-wrap;word-break:break-word;color:var(--bone);font-size:13px;line-height:1.6}
+  .foot{color:var(--mute);font-size:11px;text-align:center;margin-top:30px}
+  @media(max-width:760px){
+    h1{font-size:32px}
+    .flow{grid-template-columns:1fr;gap:10px}
+    .arrow{transform:rotate(90deg);padding:2px 0}
+    .grid{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+  <h1>Handoff · <span class="sub">RAM Guard Native</span></h1>
+  <div class="meta"><b>RAM Guard</b> · <span>~/My Apps/ram-guard</span></div>
+  <div class="meta">2026-06-27 &nbsp;·&nbsp; <span class="badge ">In progress</span></div>
+  <div class="goldline"></div>
+
+  <div class="tldr">RAM Guard is now a NATIVE Swift/SwiftUI Mac app (1.1MB, custom gold icon, in /Applications + dock + launches at login) that replaced the 564MB Electron build — RAM-monitoring core only (memory %, biggest hogs, Free up, confirm-guarded Quit); the disk views are NOT ported yet. A SAKANA (Fugu) adversarial code review was run and is recorded on this handoff: it found 2 Critical + 3 High issues in the kill path / engine that MUST be fixed before this is reliable (pid-reuse can kill the wrong process; 'Quit Chrome' kills a helper not the app; no Process timeout; readRam shows a false 100% on empty output). Repo is public + MIT. A launch carousel is built awaiting approval.</div>
+
+  <div class="legend">&rsaquo; The shape of it — read left to right</div>
+  <div class="flow">
+    <div class="stage done">
+      <div class="label"><span class="dot"></span>Done <span class="count">6</span></div>
+      <div class="chips"><div class="chip">NATIVE REWRITE: native/RAMGuard.swift — SwiftUI menu-bar pill + Window, vm_stat/ps engine ported from the Electron ram.ts, grouped hogs, one-tap Free up, confirm-guarded Quit. swiftc -parse-as-library -O, bundled, ad-hoc signed.</div><div class="chip">Custom gold app icon (native/icon.html -&gt; Playwright PNG -&gt; sips/iconutil -&gt; AppIcon.icns), embedded.</div><div class="chip">Installed + swapped: replaced /Applications/RAM Guard.app (564MB Electron) with the native one (1.1MB). Dock tile + Login Item now launch native. Verified native arm64 Mach-O, running, icon present.</div><div class="chip more">+3 more</div></div>
+    </div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage now">
+      <div class="label"><span class="dot"></span>Now <span class="count">4</span></div>
+      <div class="chips"><div class="chip">Native app LIVE on Drey's Mac: /Applications/RAM Guard.app, dock (gold icon), Login Item, running. Native source ~/My Apps/ram-guard/native/ is UNCOMMITTED; public repo main still shows the Electron code.</div><div class="chip">Sakana review: 2 Critical + 3 High captured; Medium/Low truncated by the token cap (re-run for the rest). NONE of the findings fixed yet.</div><div class="chip">Carousel built in clean/ (01-cover-video.mp4, 02-05.png, 06-demo-video.mp4, 07-09.png), NOT posted — awaiting Drey approval before Zernio.</div><div class="chip more">+1 more</div></div>
+    </div>
+    <div class="arrow">&rarr;</div>
+    <div class="stage next">
+      <div class="label"><span class="dot"></span>Next <span class="count">6</span></div>
+      <div class="chips"><div class="chip">FIX the Sakana criticals/highs in native/RAMGuard.swift (full detail in docs/handoffs/SAKANA-REVIEW-RAMGuard-native.md): C1 re-validate pid identity (process start-time) before kill so a recycled pid can't kill the wrong process; C2 target the whole app group / parent pid so 'Quit Chrome' quits Chrome not one helper; H1 restore the Process timeout+SIGKILL guard (or switch to host_statistics64/sysctl); H2 store + invalidate the Timer and ensure main-thread init; H3 fix readRam (factor the compressor; show '—' not a false 100% when vm_stat output is empty).</div><div class="chip">Optionally re-run Sakana for the truncated Medium/Low tier, or run AB-MCTS / agentic-tree-search on the C2 app-group-kill problem (testable).</div><div class="chip">Port the disk-cleaning views (junk, large-files, apps, login-items, storage) from the Electron src/ into native Swift, with the same Trash-only + confirm guardrails.</div><div class="chip more">+3 more</div></div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h2>What Was Done</h2><ul><li>NATIVE REWRITE: native/RAMGuard.swift — SwiftUI menu-bar pill + Window, vm_stat/ps engine ported from the Electron ram.ts, grouped hogs, one-tap Free up, confirm-guarded Quit. swiftc -parse-as-library -O, bundled, ad-hoc signed.</li><li>Custom gold app icon (native/icon.html -&gt; Playwright PNG -&gt; sips/iconutil -&gt; AppIcon.icns), embedded.</li><li>Installed + swapped: replaced /Applications/RAM Guard.app (564MB Electron) with the native one (1.1MB). Dock tile + Login Item now launch native. Verified native arm64 Mach-O, running, icon present.</li><li>SAKANA (Fugu) review of native/RAMGuard.swift run via mcp__sakana__ask_sakana (2026-06-27). Full review saved at docs/handoffs/SAKANA-REVIEW-RAMGuard-native.md.</li><li>Earlier today: built + hardened the v2 Electron app (security/disaster audit, 17 findings, 5 critical/high fixed), merged to main, made the repo PUBLIC + MIT, added GEO line to README, shipped v1 to Luis (itsluisc).</li><li>Launch carousel: ~/My Apps/Carousels/ram-guard-open-source/ — 9 slides in Drey's Playbook style (warm off-white, orange #e8633f, Inter+Caveat, rough.js, cartoon on cover+CTA, @itisdrey), distinct visual per slide; the cover is a video (hook + demo + Grind Labs 'Rillo On The Rise'); slide 6 a different video (junk-clean). Caption in CAPTION.md.</li></ul></div>
+    <div class="card"><h2>Current State</h2><ul><li>Native app LIVE on Drey's Mac: /Applications/RAM Guard.app, dock (gold icon), Login Item, running. Native source ~/My Apps/ram-guard/native/ is UNCOMMITTED; public repo main still shows the Electron code.</li><li>Sakana review: 2 Critical + 3 High captured; Medium/Low truncated by the token cap (re-run for the rest). NONE of the findings fixed yet.</li><li>Carousel built in clean/ (01-cover-video.mp4, 02-05.png, 06-demo-video.mp4, 07-09.png), NOT posted — awaiting Drey approval before Zernio.</li><li>Old Electron build still at ~/My Apps/ram-guard/dist/mac-arm64/.</li></ul></div>
+    <div class="card full"><h2>What's Next <span style="font-size:11px;color:var(--mute);font-weight:400">(ordered — start at 1)</span></h2><ul class="ol"><li>FIX the Sakana criticals/highs in native/RAMGuard.swift (full detail in docs/handoffs/SAKANA-REVIEW-RAMGuard-native.md): C1 re-validate pid identity (process start-time) before kill so a recycled pid can't kill the wrong process; C2 target the whole app group / parent pid so 'Quit Chrome' quits Chrome not one helper; H1 restore the Process timeout+SIGKILL guard (or switch to host_statistics64/sysctl); H2 store + invalidate the Timer and ensure main-thread init; H3 fix readRam (factor the compressor; show '—' not a false 100% when vm_stat output is empty).</li><li>Optionally re-run Sakana for the truncated Medium/Low tier, or run AB-MCTS / agentic-tree-search on the C2 app-group-kill problem (testable).</li><li>Port the disk-cleaning views (junk, large-files, apps, login-items, storage) from the Electron src/ into native Swift, with the same Trash-only + confirm guardrails.</li><li>Drey: eyeball the native window UI (I could not screenshot the screen).</li><li>Approve the carousel -&gt; stage in Zernio (cover video + image slides) -&gt; post.</li><li>Decide whether the public repo switches to the native app; commit native/ source. Optional: code-sign + notarize.</li></ul></div>
+    <div class="card"><h2>Key Decisions</h2><div class="dec">• <b>Rewrote RAM Guard from Electron to native Swift/SwiftUI</b><br><span class="why">↳ Drey wanted a real native app like Wispr Flow: 1.1MB vs 564MB, instant launch, real icon, normal app behavior.</span></div><div class="dec">• <b>Approved Swift as a third language for this app</b><br><span class="why">↳ Only path to a true native Mac app; ships as a prebuilt .app (no toolchain for Drey); self-contained utility, no shared code with the TS web stack.</span></div><div class="dec">• <b>Sent the native Swift source to Sakana Fugu for review despite its 'no product source' rule</b><br><span class="why">↳ RAM Guard is an open-source MIT utility with no secrets/IP, bound for the public repo, and Drey explicitly directed the Sakana review — nothing to leak.</span></div><div class="dec">• <b>Reframed the carousel cover off the '$90 / cheap' angle to 'supercomputer + Apollo stat + fixed in a day with AI'</b><br><span class="why">↳ Drey said it made him sound cheap; used the true moon-landing stat, not the false 'nuclear bomb' line.</span></div><div class="dec">• <b>Carousel music = Luis's Grind Labs track, not Dr. Dre</b><br><span class="why">↳ Owned/in-house so IG won't mute it; copyrighted Dre gets the audio killed.</span></div></div>
+    <div class="card"><h2>Gotchas</h2><ul><li>SAKANA CRITICALS (native engine, NOT fixed): C1 kill() can SIGTERM a recycled pid and hit the wrong process (5s scan-to-click window); C2 'quit app' only kills the biggest helper pid, so Chrome survives while the UI says it freed GBs; H3 readRam reports a FALSE 100% used when vm_stat returns empty (e.g. a hung call), which can trigger panic-quits.</li><li>The native app has the RAM core ONLY — disk views (junk/large/apps/login/storage) are NOT ported.</li><li>Native app is ad-hoc signed, local only, not notarized.</li><li>I could not screenshot Drey's screen (no Screen Recording permission); the native window UI is verified by clean launch only.</li><li>Build: swiftc -parse-as-library -O native/RAMGuard.swift; icon via node native/render-icon.js (Playwright resolves via NODE_PATH=~/My Apps/Carousels/glm-ursula-build/node_modules) then sips/iconutil.</li><li>Electron + native share bundle id com.drey.ramguard; the Electron app was removed from /Applications and replaced.</li><li>Carousel style memory corrected: reference-playbook-carousel-style.md (clone template, orange #e8633f not gold, cartoon mandatory, @itisdrey).</li></ul></div>
+    <div class="card full files"><h2>Files Touched</h2><ul><li><code>native/RAMGuard.swift</code> <span class="c">— the native app — engine + SwiftUI menu-bar pill + window</span></li><li><code>docs/handoffs/SAKANA-REVIEW-RAMGuard-native.md</code> <span class="c">— full Sakana (Fugu) adversarial review — 2 Critical + 3 High</span></li><li><code>native/Info.plist / icon.html / render-icon.js / AppIcon.icns</code> <span class="c">— bundle config + custom icon pipeline</span></li><li><code>/Applications/RAM Guard.app</code> <span class="c">— installed native app (1.1MB), replaces the Electron one</span></li><li><code>src/*.ts + main.ts + window.html + window-renderer.js</code> <span class="c">— the Electron v2 (source for porting the remaining views to Swift)</span></li><li><code>~/My Apps/Carousels/ram-guard-open-source/</code> <span class="c">— the launch carousel (9 slides + 2 videos, CAPTION.md)</span></li></ul></div>
+  </div>
+
+  <div class="resume">
+    <div class="bar">
+      <span class="t">&rsaquo; Resume Prompt</span>
+      <span class="hint">paste into a fresh session — gives the next Claude everything</span>
+      <button class="copy" onclick="cp(this)">Copy</button>
+    </div>
+    <pre id="rp">I'm resuming RAM Guard (~/My Apps/ram-guard). Read the handoff at ~/My Apps/ram-guard/docs/handoffs/HANDOFF-RAM-GUARD-NATIVE-20260627.html and the Sakana review at docs/handoffs/SAKANA-REVIEW-RAMGuard-native.md. The native Swift app is LIVE in /Applications (RAM core only). FIRST fix the Sakana criticals in native/RAMGuard.swift: pid-reuse safety (C1), kill-the-app-not-a-helper (C2), Process timeout (H1), Timer invalidation (H2), and the false-100%-on-empty-vm_stat bug (H3). Then port the disk views and rebuild. The launch carousel is built in ~/My Apps/Carousels/ram-guard-open-source/ awaiting approval to post via Zernio.</pre>
+  </div>
+
+  <div class="foot">Generated Jun 27, 2026, 9:51 AM · single-file handoff · /handoff</div>
+<script>
+  function cp(b){var t=document.getElementById('rp').innerText;
+    navigator.clipboard.writeText(t).then(function(){var o=b.innerText;b.innerText='Copied';setTimeout(function(){b.innerText=o},1400)})}
+</script>
+</body>
+</html>
